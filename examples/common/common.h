@@ -149,6 +149,7 @@ struct SDContextParams {
     rng_type_t rng_type         = CUDA_RNG;
     rng_type_t sampler_rng_type = RNG_TYPE_COUNT;
     bool offload_params_to_cpu  = false;
+    bool sequential_modules     = false;
     std::string max_vram        = "0";
     bool stream_layers          = false;
     bool eager_load             = false;

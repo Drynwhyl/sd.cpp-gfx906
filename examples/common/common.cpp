@@ -539,6 +539,11 @@ ArgOptions SDContextParams::get_options() {
          "place the weights in RAM to save VRAM, and automatically load them into VRAM when needed",
          true, &offload_params_to_cpu},
         {"",
+         "--sequential-modules",
+         "time-share GPU VRAM across te/diffusion/vae: load each module for its phase and free it after. "
+         "Prepends te=disk,diffusion=disk,vae=disk to --params-backend; explicit assignments still override",
+         true, &sequential_modules},
+        {"",
          "--mmap",
          "whether to memory-map model",
          true, &enable_mmap},
@@ -775,6 +780,9 @@ void SDContextParams::prepare_backend_assignments() {
     if (offload_params_to_cpu) {
         prepend_backend_assignment(effective_params_backend, "*=cpu");
     }
+    if (sequential_modules) {
+        prepend_backend_assignment(effective_params_backend, "te=disk,diffusion=disk,vae=disk");
+    }
 
     if (clip_on_cpu) {
         prepend_backend_assignment(effective_backend, "te=cpu");
@@ -830,6 +838,7 @@ std::string SDContextParams::to_string() const {
         << "  rng_type: " << sd_rng_type_name(rng_type) << ",\n"
         << "  sampler_rng_type: " << sd_rng_type_name(sampler_rng_type) << ",\n"
         << "  offload_params_to_cpu: " << (offload_params_to_cpu ? "true" : "false") << ",\n"
+        << "  sequential_modules: " << (sequential_modules ? "true" : "false") << ",\n"
         << "  max_vram: \"" << max_vram << "\",\n"
         << "  stream_layers: " << (stream_layers ? "true" : "false") << ",\n"
         << "  eager_load: " << (eager_load ? "true" : "false") << ",\n"

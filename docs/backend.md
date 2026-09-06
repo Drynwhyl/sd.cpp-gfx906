@@ -241,4 +241,12 @@ The example CLI/server still accepts these older CPU placement flags as compatib
 
 Because this default is inserted first, later explicit `--params-backend` entries can still override it, for example `--offload-to-cpu --params-backend te=disk` keeps non-TE parameters on CPU and reloads TE parameters from disk.
 
+`--sequential-modules` prepends disk params for the three large generation modules:
+
+```shell
+--params-backend te=disk,diffusion=disk,vae=disk
+```
+
+Each module is loaded onto the runtime backend for its phase (text encode, sample, VAE) and released afterward, so TE + DiT + VAE do not need to stay resident together. Explicit `--params-backend` entries still override the prepended assignments. This is not the same as `--offload-to-cpu`: weights are not kept in RAM. Combine with a single-device `--backend` (do not layer-split TE) when the goal is one GPU time-sharing the modules.
+
 Library callers should set `backend` and `params_backend` directly. The old CPU/offload fields are no longer part of the C API. Explicit `--backend` and `--params-backend` assignments are preferred for new commands.

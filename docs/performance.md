@@ -45,6 +45,14 @@ Use disk params to reduce both VRAM and RAM usage:
 
 This reloads parameters from the model file on demand and releases them after use. It has the lowest memory residency, but can be slower because weights must be read again. `disk` is never selected implicitly; set it explicitly when RAM usage matters more than reload cost.
 
+`--sequential-modules` is the example CLI/server shortcut for time-sharing GPU VRAM across TE, diffusion, and VAE without keeping those weights in RAM:
+
+```shell
+--backend cuda0 --sequential-modules
+```
+
+It prepends `te=disk,diffusion=disk,vae=disk` to `--params-backend`. Use it when TE + DiT + VAE cannot all fit on one card (or when a second card should stay idle). Pair it with a single-device `--backend`; a TE layer-split such as `te=cuda0&cuda1` still occupies both devices during encode. Explicit `--params-backend` assignments still override the shortcut.
+
 Per-module assignments can target only the largest modules:
 
 ```shell
