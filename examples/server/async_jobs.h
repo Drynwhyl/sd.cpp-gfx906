@@ -54,6 +54,8 @@ struct AsyncJobManager {
     std::deque<std::string> queue;
     uint64_t next_id              = 0;
     bool stop                     = false;
+    bool ctx_ready                = false;
+    bool ctx_failed               = false;
     size_t max_pending_jobs       = 64;
     int64_t completed_ttl_seconds = 600;
     int64_t failed_ttl_seconds    = 600;
@@ -75,4 +77,4 @@ bool execute_vid_gen_job(ServerRuntime& runtime,
                          int& output_frame_count,
                          int& output_fps,
                          std::string& error_message);
-void async_job_worker(ServerRuntime& runtime);
+void async_job_worker(ServerRuntime& runtime, const sd_ctx_params_t& ctx_params);

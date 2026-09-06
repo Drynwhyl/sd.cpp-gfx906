@@ -236,6 +236,18 @@ bool execute_vid_gen_job(ServerRuntime& runtime,
                          int& output_frame_count,
                          int& output_fps,
                          std::string& error_message) {
+    {
+        const auto& gp = job.vid_gen.gen_params;
+        LOG_INFO("vid_gen resolved %dx%dx%d steps=%d method=%s scheduler=%s txt_cfg=%.2f loras=%zu",
+                 gp.width,
+                 gp.height,
+                 gp.video_frames,
+                 gp.sample_params.sample_steps,
+                 sd_sample_method_name(gp.sample_params.sample_method),
+                 sd_scheduler_name(gp.sample_params.scheduler),
+                 gp.sample_params.guidance.txt_cfg,
+                 gp.lora_map.size());
+    }
     sd_vid_gen_params_t params = job.vid_gen.to_sd_vid_gen_params_t();
 
     SDImageVec results;
@@ -277,8 +289,24 @@ bool execute_vid_gen_job(ServerRuntime& runtime,
     return true;
 }
 
-void async_job_worker(ServerRuntime& runtime) {
+void async_job_worker(ServerRuntime& runtime, const sd_ctx_params_t& ctx_params) {
     AsyncJobManager& manager = *runtime.async_job_manager;
+
+    SDCtxPtr owned(new_sd_ctx(&ctx_params));
+    {
+        std::lock_guard<std::mutex> lock(manager.mutex);
+        if (owned == nullptr) {
+            manager.ctx_failed = true;
+        } else {
+            runtime.sd_ctx  = owned.get();
+            manager.ctx_ready = true;
+            LOG_INFO("sd_ctx initialized on job worker thread");
+        }
+    }
+    manager.cv.notify_all();
+    if (owned == nullptr) {
+        return;
+    }
 
     while (true) {
         std::shared_ptr<AsyncGenerationJob> job;

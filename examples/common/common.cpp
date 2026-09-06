@@ -2064,6 +2064,26 @@ bool SDGenerationParams::from_json_str(
                                  nullptr);
     }
 
+    if (j.contains("steps") && j["steps"].is_number_integer()) {
+        sample_params.sample_steps = j["steps"];
+    }
+    if (j.contains("cfg_scale") && j["cfg_scale"].is_number()) {
+        sample_params.guidance.txt_cfg = j["cfg_scale"];
+        sample_params.guidance.img_cfg = j["cfg_scale"];
+    }
+    if (j.contains("sample_method") && j["sample_method"].is_string()) {
+        enum sample_method_t tmp = str_to_sample_method(j["sample_method"].get<std::string>().c_str());
+        if (tmp != SAMPLE_METHOD_COUNT) {
+            sample_params.sample_method = tmp;
+        }
+    }
+    if (j.contains("scheduler") && j["scheduler"].is_string()) {
+        enum scheduler_t tmp = str_to_scheduler(j["scheduler"].get<std::string>().c_str());
+        if (tmp != SCHEDULER_COUNT) {
+            sample_params.scheduler = tmp;
+        }
+    }
+
     if (j.contains("vae_tiling_params") && j["vae_tiling_params"].is_object()) {
         const json& tiling_json = j["vae_tiling_params"];
         if (tiling_json.contains("enabled") && tiling_json["enabled"].is_boolean()) {

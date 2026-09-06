@@ -86,12 +86,6 @@ int main(int argc, const char** argv) {
     LOG_DEBUG("%s", default_gen_params.to_string().c_str());
 
     sd_ctx_params_t sd_ctx_params = ctx_params.to_sd_ctx_params_t(false);
-    SDCtxPtr sd_ctx(new_sd_ctx(&sd_ctx_params));
-
-    if (sd_ctx == nullptr) {
-        LOG_ERROR("new_sd_ctx_t failed");
-        return 1;
-    }
 
     std::mutex sd_ctx_mutex;
 
@@ -101,7 +95,7 @@ int main(int argc, const char** argv) {
     std::mutex upscaler_mutex;
     AsyncJobManager async_job_manager;
     ServerRuntime runtime = {
-        sd_ctx.get(),
+        nullptr,
         &sd_ctx_mutex,
         &svr_params,
         &ctx_params,
@@ -113,7 +107,18 @@ int main(int argc, const char** argv) {
         &async_job_manager,
     };
 
-    std::thread async_worker(async_job_worker, std::ref(runtime));
+    std::thread async_worker(async_job_worker, std::ref(runtime), sd_ctx_params);
+    {
+        std::unique_lock<std::mutex> lock(async_job_manager.mutex);
+        async_job_manager.cv.wait(lock, [&]() {
+            return async_job_manager.ctx_ready || async_job_manager.ctx_failed;
+        });
+    }
+    if (async_job_manager.ctx_failed || runtime.sd_ctx == nullptr) {
+        LOG_ERROR("new_sd_ctx_t failed");
+        async_worker.join();
+        return 1;
+    }
 
     httplib::Server svr;
 
