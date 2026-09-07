@@ -608,6 +608,10 @@ namespace MiniMaxH3VAE {
             auto input  = ensure_video_shape(x);
             auto tiling = h3_tiling(tiling_params);
             if (input.shape()[2] == 1) {
+                // I2VA/FL2VA keyframe: one frame. Forced 16x16 tiles + HIP graph
+                // capture hangs on gfx906 after warmup (CPU spin, GPU 0%).
+                // Full-frame encode fits; decode keeps h3_tiling.
+                tiling.enabled = false;
                 auto encoded = VAE::encode(n_threads, input, tiling, circular_x, circular_y);
                 if (!encoded.empty() && encoded.shape()[2] > 1) {
                     encoded = sd::ops::slice(encoded,
