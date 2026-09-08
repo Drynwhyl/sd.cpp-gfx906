@@ -105,6 +105,28 @@ bool cancel_queued_job(AsyncJobManager& manager, AsyncGenerationJob& job) {
     return true;
 }
 
+bool cancel_generating_job(ServerRuntime& runtime, AsyncGenerationJob& job) {
+    if (job.status != AsyncJobStatus::Generating) {
+        return false;
+    }
+    if (runtime.sd_ctx == nullptr) {
+        return false;
+    }
+    // Worker holds sd_ctx_mutex for the whole generate. The cancel flag is atomic.
+    sd_cancel_generation(runtime.sd_ctx, SD_CANCEL_ALL);
+    job.cancel_requested = true;
+    job.status           = AsyncJobStatus::Cancelled;
+    job.completed_at     = unix_timestamp_now();
+    job.result_images_b64.clear();
+    job.result_media_b64.clear();
+    job.result_media_mime_type.clear();
+    job.result_frame_count = 0;
+    job.result_fps         = 0;
+    job.error_code         = "cancelled";
+    job.error_message      = "job cancelled by client";
+    return true;
+}
+
 json make_async_job_json(const AsyncJobManager& manager, const AsyncGenerationJob& job) {
     json result;
     result["id"]             = job.id;
@@ -149,17 +171,34 @@ json make_async_job_json(const AsyncJobManager& manager, const AsyncGenerationJo
     } else if (job.status == AsyncJobStatus::Failed ||
                job.status == AsyncJobStatus::Cancelled) {
         result["result"] = nullptr;
-        result["error"]  = {
-             {"code",
+        result["error"] = {
+            {"code",
              job.error_code.empty()
-                  ? (job.status == AsyncJobStatus::Cancelled ? "cancelled" : "generation_failed")
-                  : job.error_code},
-             {"message", job.error_message},
+                 ? (job.status == AsyncJobStatus::Cancelled ? "cancelled" : "generation_failed")
+                 : job.error_code},
+            {"message", job.error_message},
         };
     } else {
         result["result"] = nullptr;
         result["error"]  = nullptr;
     }
+
+    const int step             = job.progress_step.load(std::memory_order_relaxed);
+    const int steps            = job.progress_steps.load(std::memory_order_relaxed);
+    const float seconds_per_it = job.progress_step_seconds.load(std::memory_order_relaxed);
+    json progress              = {
+        {"step", step},
+        {"steps", steps},
+        {"seconds_per_step", nullptr},
+        {"eta_seconds", nullptr},
+    };
+    if (seconds_per_it > 0.f) {
+        progress["seconds_per_step"] = seconds_per_it;
+        if (step > 0 && steps > step) {
+            progress["eta_seconds"] = static_cast<int>((steps - step) * seconds_per_it);
+        }
+    }
+    result["progress"] = std::move(progress);
 
     return result;
 }
@@ -168,6 +207,7 @@ bool execute_img_gen_job(ServerRuntime& runtime,
                          AsyncGenerationJob& job,
                          std::vector<std::string>& output_images,
                          std::string& error_message) {
+    sd_cancel_generation(runtime.sd_ctx, SD_CANCEL_RESET);
     sd_img_gen_params_t params = job.img_gen.to_sd_img_gen_params_t();
 
     SDImageVec results;
@@ -238,7 +278,7 @@ bool execute_vid_gen_job(ServerRuntime& runtime,
                          std::string& error_message) {
     {
         const auto& gp = job.vid_gen.gen_params;
-        LOG_INFO("vid_gen resolved %dx%dx%d steps=%d method=%s scheduler=%s txt_cfg=%.2f loras=%zu",
+        LOG_INFO("vid_gen resolved %dx%dx%d steps=%d method=%s scheduler=%s txt_cfg=%.2f loras=%zu refs=%zu init=%d",
                  gp.width,
                  gp.height,
                  gp.video_frames,
@@ -246,8 +286,11 @@ bool execute_vid_gen_job(ServerRuntime& runtime,
                  sd_sample_method_name(gp.sample_params.sample_method),
                  sd_scheduler_name(gp.sample_params.scheduler),
                  gp.sample_params.guidance.txt_cfg,
-                 gp.lora_map.size());
+                 gp.lora_map.size(),
+                 gp.ref_images.size(),
+                 gp.init_image.get().data != nullptr ? 1 : 0);
     }
+    sd_cancel_generation(runtime.sd_ctx, SD_CANCEL_RESET);
     sd_vid_gen_params_t params = job.vid_gen.to_sd_vid_gen_params_t();
 
     SDImageVec results;
@@ -288,6 +331,23 @@ bool execute_vid_gen_job(ServerRuntime& runtime,
     output_fps             = job.vid_gen.gen_params.fps;
     return true;
 }
+
+static void server_progress_cb(int step, int steps, float time, void* data) {
+    auto* job = static_cast<AsyncGenerationJob*>(data);
+    if (job == nullptr) {
+        return;
+    }
+    job->progress_step.store(step, std::memory_order_relaxed);
+    job->progress_steps.store(steps, std::memory_order_relaxed);
+    job->progress_step_seconds.store(time, std::memory_order_relaxed);
+    if (step > 0 && steps > 0) {
+        LOG_INFO("job %s sample %d/%d - %.2fs/it", job->id.c_str(), step, steps, time);
+    }
+}
+
+struct ProgressCallbackGuard {
+    ~ProgressCallbackGuard() { sd_set_progress_callback(nullptr, nullptr); }
+};
 
 void async_job_worker(ServerRuntime& runtime, const sd_ctx_params_t& ctx_params) {
     AsyncJobManager& manager = *runtime.async_job_manager;
@@ -334,6 +394,13 @@ void async_job_worker(ServerRuntime& runtime, const sd_ctx_params_t& ctx_params)
             job             = it->second;
             job->status     = AsyncJobStatus::Generating;
             job->started_at = unix_timestamp_now();
+            const int planned_steps =
+                job->kind == AsyncJobKind::VidGen
+                    ? job->vid_gen.gen_params.sample_params.sample_steps
+                    : job->img_gen.gen_params.sample_params.sample_steps;
+            job->progress_step.store(0, std::memory_order_relaxed);
+            job->progress_steps.store(planned_steps, std::memory_order_relaxed);
+            job->progress_step_seconds.store(0.f, std::memory_order_relaxed);
         }
 
         std::vector<std::string> output_images;
@@ -343,6 +410,9 @@ void async_job_worker(ServerRuntime& runtime, const sd_ctx_params_t& ctx_params)
         int output_fps         = 0;
         std::string error_message;
         bool ok = false;
+
+        sd_set_progress_callback(server_progress_cb, job.get());
+        ProgressCallbackGuard progress_guard;
 
         if (job->kind == AsyncJobKind::ImgGen) {
             ok = execute_img_gen_job(runtime, *job, output_images, error_message);
@@ -365,9 +435,19 @@ void async_job_worker(ServerRuntime& runtime, const sd_ctx_params_t& ctx_params)
                 continue;
             }
 
-            job->completed_at = unix_timestamp_now();
-            if (ok) {
+            if (job->cancel_requested || job->status == AsyncJobStatus::Cancelled) {
+                job->status        = AsyncJobStatus::Cancelled;
+                job->completed_at  = job->completed_at == 0 ? unix_timestamp_now() : job->completed_at;
+                job->error_code    = "cancelled";
+                job->error_message = "job cancelled by client";
+                job->result_images_b64.clear();
+                job->result_media_b64.clear();
+                job->result_media_mime_type.clear();
+                job->result_frame_count = 0;
+                job->result_fps         = 0;
+            } else if (ok) {
                 job->status                 = AsyncJobStatus::Completed;
+                job->completed_at           = unix_timestamp_now();
                 job->result_images_b64      = std::move(output_images);
                 job->result_media_b64       = std::move(output_media_b64);
                 job->result_media_mime_type = std::move(output_media_mime_type);
@@ -377,6 +457,7 @@ void async_job_worker(ServerRuntime& runtime, const sd_ctx_params_t& ctx_params)
                 job->error_message.clear();
             } else {
                 job->status        = AsyncJobStatus::Failed;
+                job->completed_at  = unix_timestamp_now();
                 job->error_code    = "generation_failed";
                 job->error_message = error_message.empty() ? "unknown generation error" : error_message;
                 job->result_images_b64.clear();

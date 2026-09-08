@@ -1,5 +1,6 @@
 #pragma once
 
+#include <atomic>
 #include <condition_variable>
 #include <cstdint>
 #include <deque>
@@ -44,6 +45,10 @@ struct AsyncGenerationJob {
     int result_fps         = 0;
     std::string error_code;
     std::string error_message;
+    bool cancel_requested = false;
+    std::atomic<int> progress_step{0};
+    std::atomic<int> progress_steps{0};
+    std::atomic<float> progress_step_seconds{0.f};
 };
 
 struct AsyncJobManager {
@@ -65,6 +70,7 @@ void purge_expired_jobs(AsyncJobManager& manager);
 size_t count_pending_jobs(const AsyncJobManager& manager);
 std::string make_async_job_id(AsyncJobManager& manager);
 bool cancel_queued_job(AsyncJobManager& manager, AsyncGenerationJob& job);
+bool cancel_generating_job(ServerRuntime& runtime, AsyncGenerationJob& job);
 json make_async_job_json(const AsyncJobManager& manager, const AsyncGenerationJob& job);
 bool execute_img_gen_job(ServerRuntime& runtime,
                          AsyncGenerationJob& job,

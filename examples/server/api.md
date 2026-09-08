@@ -622,6 +622,17 @@ Response fields:
 
 Returns current job status.
 
+`progress` is present on every job payload:
+
+| Field | Type | Notes |
+| --- | --- | --- |
+| `progress.step` | `integer` | Completed sample steps (`0` before sampling) |
+| `progress.steps` | `integer` | Planned sample steps |
+| `progress.seconds_per_step` | `number \| null` | Last step wall time; `null` until the first step finishes |
+| `progress.eta_seconds` | `integer \| null` | `(steps - step) * seconds_per_step` during sampling only |
+
+ETA covers the denoise loop only (not TE encode or VAE decode).
+
 Typical status codes:
 
 - `200 OK`
@@ -966,8 +977,9 @@ Response fields:
 Compared with `img_gen`, the `vid_gen` request body:
 
 - `vid_gen` is a single video sequence job, so `batch_count` is not part of the request schema
-- `ref_images`, `mask_image`, `control_image`, `control_strength`, `ip_adapter_image`, `ip_adapter_strength`, and `embed_image_metadata` are not part of the request schema
-- `vid_gen` adds `end_image`, `control_frames`, `high_noise_sample_params`, `video_frames`, `fps`, `moe_boundary`, and `vace_strength`
+- `mask_image`, `control_image`, `control_strength`, `ip_adapter_image`, `ip_adapter_strength`, and `embed_image_metadata` are not part of the request schema
+- `vid_gen` adds `end_image`, `ref_images`, `control_frames`, `high_noise_sample_params`, `video_frames`, `fps`, `moe_boundary`, and `vace_strength`
+- MiniMax-H3 Ref2VA uses `ref_images[]` (native resolution; do not combine with `init_image` / `end_image`)
 
 Example:
 
@@ -987,6 +999,7 @@ Example:
 
   "init_image": null,
   "end_image": null,
+  "ref_images": [],
   "control_frames": [],
 
   "sample_params": {
@@ -1070,6 +1083,7 @@ Channel expectations:
 
 - `init_image`: 3 channels
 - `end_image`: 3 channels
+- `ref_images[]`: 3 channels, native resolution (not stretched to `width`/`height`)
 - `control_frames[]`: 3 channels
 
 Frame ordering rules:
@@ -1106,6 +1120,7 @@ Image and frame fields:
 | --- | --- |
 | `init_image` | `string \| null` |
 | `end_image` | `string \| null` |
+| `ref_images` | `array<string>` |
 | `control_frames` | `array<string>` |
 
 LoRA fields:
