@@ -413,7 +413,8 @@ bool ModelManager::load_tensors_to_params_backend(const std::vector<TensorState*
     return true;
 }
 
-bool ModelManager::stage_tensors_to_compute_backend(const std::vector<TensorState*>& states) {
+bool ModelManager::stage_tensors_to_compute_backend(const std::vector<TensorState*>& states,
+                                                    bool sync_compute_backend) {
     std::map<std::pair<ggml_backend_t, ggml_backend_buffer_type_t>, std::vector<TensorState*>> states_by_staging_target;
     for (TensorState* state : states) {
         if (state == nullptr || should_ignore(*state) || is_optional_missing_tensor(state->name)) {
@@ -485,7 +486,9 @@ bool ModelManager::stage_tensors_to_compute_backend(const std::vector<TensorStat
             std::swap(managed_tensor->data, staging_tensor->data);
             std::swap(managed_tensor->extra, staging_tensor->extra);
         }
-        ggml_backend_synchronize(compute_backend);
+        if (sync_compute_backend) {
+            ggml_backend_synchronize(compute_backend);
+        }
 
         auto block             = std::make_unique<ComputeStagingBlock>();
         block->compute_backend = compute_backend;
@@ -1017,9 +1020,15 @@ void ModelManager::release_params_storage_blocks(bool force,
                                               target_states->find(state) == target_states->end()) {
                                               return false;
                                           }
-                                          return state->active_prepare_count == 0 &&
-                                                 !state->staged_to_compute_backend &&
-                                                 state->residency_mode == ResidencyMode::Disk;
+                                          if (state->active_prepare_count != 0 ||
+                                              state->staged_to_compute_backend) {
+                                              return false;
+                                          }
+                                          if (state->residency_mode == ResidencyMode::Disk) {
+                                              return true;
+                                          }
+                                          return state->residency_mode == ResidencyMode::ParamBackend &&
+                                                 sd_backend_is_cpu(state->params_backend);
                                       });
         }
 
@@ -1041,6 +1050,10 @@ void ModelManager::erase_params_storage_block(ParamsStorageBlock* block) {
     if (it != params_storage_blocks_.end()) {
         params_storage_blocks_.erase(it);
     }
+}
+
+void ModelManager::release_idle_cpu_params() {
+    release_params_storage_blocks(false);
 }
 
 void ModelManager::release_all() {
@@ -1127,6 +1140,26 @@ bool ModelManager::assign_compute_backend(const std::vector<ggml_tensor*>& tenso
         }
     }
 
+    return true;
+}
+
+bool ModelManager::prefetch_stage_params(const std::vector<ggml_tensor*>& tensors) {
+    if (tensors.empty()) {
+        return true;
+    }
+
+    std::vector<TensorState*> required_states;
+    if (!resolve_required_tensor_states(tensors, required_states)) {
+        return false;
+    }
+    if (!load_tensors_to_params_backend(required_states)) {
+        return false;
+    }
+    if (!stage_tensors_to_compute_backend(required_states, false)) {
+        release_compute_staging_blocks(false);
+        release_params_storage_blocks(false);
+        return false;
+    }
     return true;
 }
 

@@ -20,6 +20,7 @@
 #include <set>
 #include <sstream>
 #include <string>
+#include <thread>
 #include <unordered_map>
 #include <unordered_set>
 #include <vector>
@@ -2771,7 +2772,9 @@ protected:
                                                bool free_compute_params,
                                                bool preserve_backend_tensor_data_map,
                                                bool no_return                                          = false,
-                                               const std::unordered_set<std::string>* cache_keep_names = nullptr) {
+                                               const std::unordered_set<std::string>* cache_keep_names = nullptr,
+                                               std::function<void()> overlap_start                     = nullptr,
+                                               std::function<void()> overlap_join                      = nullptr) {
         std::vector<ggml_tensor*> graph_param_tensors;
         std::vector<ggml_tensor*> params_to_prepare;
         if (!prepare_execute_graph_weights(gf, graph_param_tensors, params_to_prepare, !free_compute_params)) {
@@ -2840,6 +2843,18 @@ protected:
         }
         if (cpu_fallback_backend != nullptr) {
             sd_backend_cpu_set_n_threads(cpu_fallback_backend, n_threads);
+        }
+
+        struct OverlapJoinGuard {
+            std::function<void()> join;
+            ~OverlapJoinGuard() {
+                if (join) {
+                    join();
+                }
+            }
+        } overlap_join_guard{overlap_join};
+        if (overlap_start) {
+            overlap_start();
         }
 
         ggml_status status;
@@ -2937,13 +2952,31 @@ protected:
                                                             bool no_return = false) {
         GGML_ASSERT(gf != nullptr);
 
-        free_compute_buffer();
         free_cache_ctx_and_buffer();
 
         std::unordered_map<ggml_tensor*, PersistentExternalBinding> persistent_externals;
         snapshot_persistent_externals(plan, gf, persistent_externals);
 
         std::optional<sd::Tensor<T>> output = sd::Tensor<T>();
+        std::thread prefetch_thread;
+        auto join_prefetch = [&prefetch_thread]() {
+            if (prefetch_thread.joinable()) {
+                prefetch_thread.join();
+            }
+        };
+        auto collect_segment_params = [this, gf](const GraphCutSegment& segment) {
+            std::vector<ggml_tensor*> params;
+            for (const auto& input : segment.input_refs) {
+                if (input.type != GraphCutSegment::INPUT_PARAM) {
+                    continue;
+                }
+                ggml_tensor* param = canonical_param_tensor(sd::ggml_graph_cut::input_tensor(gf, input));
+                if (param != nullptr) {
+                    params.push_back(param);
+                }
+            }
+            return params;
+        };
         for (size_t seg_idx = 0; seg_idx < plan.segments.size(); ++seg_idx) {
             const auto& segment   = plan.segments[seg_idx];
             const bool is_last    = seg_idx + 1 == plan.segments.size();
@@ -2985,15 +3018,38 @@ protected:
             ggml_context* segment_graph_ctx = nullptr;
             ggml_cgraph* segment_graph      = sd::ggml_graph_cut::build_segment_graph(gf, segment, &segment_graph_ctx);
             const bool keep_segment_params  = segment.residency == sd::ggml_graph_cut::SegmentResidency::RESIDENT;
-            auto segment_output             = execute_graph<T>(segment_graph,
+            auto overlap_start              = [&]() {
+                if (!stream_layers_enabled || is_last) {
+                    return;
+                }
+                const auto& next = plan.segments[seg_idx + 1];
+                if (next.residency == sd::ggml_graph_cut::SegmentResidency::RESIDENT) {
+                    return;
+                }
+                std::vector<ggml_tensor*> next_params = collect_segment_params(next);
+                if (next_params.empty()) {
+                    return;
+                }
+                join_prefetch();
+                prefetch_thread = std::thread([this, next_params]() {
+                    auto manager = this->weight_manager.lock();
+                    if (manager != nullptr) {
+                        manager->prefetch_stage_params(next_params);
+                    }
+                });
+            };
+            auto segment_output = execute_graph<T>(segment_graph,
                                                    n_threads,
-                                                   true,
+                                                   false,
                                                    !keep_segment_params,
                                                    true,
                                                    !is_last || no_return,
-                                                   &future_cut_names);
+                                                   &future_cut_names,
+                                                   overlap_start,
+                                                   join_prefetch);
             ggml_free(segment_graph_ctx);
             if (!segment_output.has_value()) {
+                join_prefetch();
                 free_cache_ctx_and_buffer();
                 free_compute_buffer();
                 free_compute_ctx();
@@ -3001,6 +3057,7 @@ protected:
             }
             output = std::move(segment_output);
         }
+        join_prefetch();
 
         backend_tensor_data_map.clear();
         free_cache_ctx_and_buffer();

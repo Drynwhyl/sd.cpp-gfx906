@@ -12,6 +12,10 @@ struct RunnerWeightManager {
     virtual bool assign_compute_backend(const std::vector<ggml_tensor*>& tensors,
                                         ggml_backend_t compute_backend)                   = 0;
     virtual bool prepare_params(const std::vector<ggml_tensor*>& tensors)                 = 0;
+    virtual bool prefetch_stage_params(const std::vector<ggml_tensor*>& tensors) {
+        (void)tensors;
+        return true;
+    }
     virtual void release_compute_backend_params(const std::vector<ggml_tensor*>& tensors) = 0;
     virtual void release_params_backend_params(const std::vector<ggml_tensor*>& tensors)  = 0;
 };

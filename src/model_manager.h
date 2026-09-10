@@ -93,7 +93,8 @@ private:
     bool alloc_params_buffers(const std::vector<TensorState*>& states,
                               std::vector<ParamsStorageBlock*>& created_storage_blocks);
     bool load_tensors(const std::vector<TensorState*>& states);
-    bool stage_tensors_to_compute_backend(const std::vector<TensorState*>& states);
+    bool stage_tensors_to_compute_backend(const std::vector<TensorState*>& states,
+                                          bool sync_compute_backend = true);
 
     ggml_backend_buffer_type_t params_buffer_type_for(const TensorState& state) const;
     ggml_backend_buffer_type_t split_buffer_type_for(const TensorState& state) const;
@@ -121,6 +122,7 @@ public:
     void set_common_ignore_tensors(std::set<std::string> ignore_tensors);
     void set_loras(std::vector<LoraSpec> loras, SDVersion version);
     void set_split_buffer_type(ggml_backend_t compute_backend, ggml_backend_buffer_type_t split_buft);
+    void release_idle_cpu_params();
 
     static bool tensor_shape_supports_split_buffer(const ggml_tensor* tensor);
 
@@ -180,6 +182,7 @@ public:
     bool assign_compute_backend(const std::vector<ggml_tensor*>& tensors,
                                 ggml_backend_t compute_backend) override;
     bool prepare_params(const std::vector<ggml_tensor*>& tensors) override;
+    bool prefetch_stage_params(const std::vector<ggml_tensor*>& tensors) override;
     void release_compute_backend_params(const std::vector<ggml_tensor*>& tensors) override;
     void release_params_backend_params(const std::vector<ggml_tensor*>& tensors) override;
 };
