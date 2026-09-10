@@ -502,7 +502,7 @@ ArgOptions SDContextParams::get_options() {
          &rpc_servers},
         {"",
          "--max-vram",
-         "maximum VRAM budget in GiB for graph-cut segmented execution. Accepts a single value or assignments by backend/device, e.g. 6 or cuda0=6,vulkan0=4. 0 disables graph splitting; a negative value auto-detects free VRAM, sparing the specified value",
+          "maximum VRAM budget in GiB for graph-cut segmented execution. Accepts a single value or assignments by backend/device, e.g. 6 or cuda0=6,vulkan0=4. 0 disables graph splitting; a negative value auto-detects free VRAM, sparing the specified value. With --stream-layers this budget applies to the diffusion model only; TE/CLIP_VISION load fully then release",
          0,
          &max_vram},
     };
@@ -518,7 +518,7 @@ ArgOptions SDContextParams::get_options() {
     options.bool_options = {
         {"",
          "--stream-layers",
-         "enable residency+prefetch streaming on top of --max-vram (no effect without --max-vram; defaults to false)",
+          "stream diffusion transformer blocks under --max-vram (DiT only; TE is not segmented). No effect without --max-vram; defaults to false",
          true, &stream_layers},
         {"",
          "--eager-load",

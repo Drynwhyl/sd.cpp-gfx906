@@ -302,6 +302,9 @@ public:
     }
 
     size_t max_graph_vram_bytes_for_module(SDBackendModule module) {
+        if (stream_layers && (module == SDBackendModule::TE || module == SDBackendModule::CLIP_VISION)) {
+            return 0;
+        }
         return max_vram_assignment.bytes_for_backend(backend_for(module));
     }
 
@@ -6887,6 +6890,9 @@ SD_API bool generate_video(sd_ctx_t* sd_ctx,
     }
 
     sd_ctx->sd->reset_cancel_flag();
+    if (sd_ctx->sd->model_manager != nullptr) {
+        sd_ctx->sd->model_manager->release_idle_cpu_params();
+    }
 
     const RefImageParams ref_image_params;
 
