@@ -1805,6 +1805,10 @@ protected:
     std::vector<ggml_tensor*> runner_param_tensors;
     std::unordered_set<const ggml_tensor*> runner_param_tensor_set;
     bool params_tensor_set_dirty_ = true;
+    // When set, runner_done() keeps the param tensors staged so a follow-up
+    // compute pass (e.g. the next temporal chunk of a video VAE) reuses them
+    // instead of reloading the whole model from the params backend.
+    bool keep_params_resident_ = false;
 
     std::vector<float> one_vec = {1.f};
     ggml_tensor* one_tensor    = nullptr;
@@ -3068,12 +3072,19 @@ protected:
 public:
     void runner_done() {
         free_compute_buffer();
+        if (keep_params_resident_) {
+            return;
+        }
         std::vector<ggml_tensor*> tensors_to_release = std::move(this->runner_param_tensors);
         this->runner_param_tensors.clear();
         runner_param_tensor_set.clear();
         kept_compute_param_tensor_set.clear();
         free_compute_backend_param_tensors(tensors_to_release);
         free_params_backend_param_tensors(tensors_to_release);
+    }
+
+    void set_keep_params_resident(bool value) {
+        keep_params_resident_ = value;
     }
 
 public:

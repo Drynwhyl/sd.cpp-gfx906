@@ -676,6 +676,20 @@ namespace MiniMaxH3VAE {
             constexpr int64_t frame_pre_padding = 3;
             constexpr int64_t frame_overlap     = 5;
 
+            // Keep the VAE params staged across the temporal chunk loop: each VAE::decode
+            // call ends with runner_done(), which would otherwise release the 4.6 GB of
+            // weights and reload them for every chunk.
+            struct KeepParamsGuard {
+                MiniMaxH3VideoVAERunner* vae = nullptr;
+                explicit KeepParamsGuard(MiniMaxH3VideoVAERunner* v) : vae(v) {
+                    vae->set_keep_params_resident(true);
+                }
+                ~KeepParamsGuard() {
+                    vae->set_keep_params_resident(false);
+                    vae->runner_done();
+                }
+            } keep_params_guard(this);
+
             int64_t pseudo_tokens = input.shape()[2] + token_drop;
             int64_t pad_tokens    = (tokens_per_chunk - pseudo_tokens % tokens_per_chunk) % tokens_per_chunk;
             pseudo_tokens += pad_tokens;
